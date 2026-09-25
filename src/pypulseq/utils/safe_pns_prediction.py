@@ -39,6 +39,7 @@ from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.signal import lfilter
 
 
 def safe_example_hw():
@@ -261,7 +262,7 @@ def safe_pns_model(dgdt, dt, hw):
     # validating that the updated code is accurate. - FSz
 
 
-def safe_tau_lowpass(dgdt, tau, dt, eps=1e-16):
+def safe_tau_lowpass(dgdt, tau, dt, eps=1e-16):  # noqa: ARG001
     # function fw = safe_tau_lowpass(dgdt, tau, dt)
     #
     # Apply a RC lowpass filter with time constant tau = RC to data with sampling
@@ -275,15 +276,16 @@ def safe_tau_lowpass(dgdt, tau, dt, eps=1e-16):
     # UPDATE 230206 - There was a factor alpha missing on the first sample it
     # has now been corrected. Thanks to Oliver Schad for finding this error.
     # - FSz
+    #
+    # The filter is the recursion y[i] = alpha * x[i] + (1 - alpha) * y[i - 1],
+    # with y = 0 before the first sample. It gives the same values as the earlier
+    # convolution with the kernel alpha * (1 - alpha)^k, except for float rounding
+    # and the cut of that kernel at eps. It costs O(1) for each sample, not O(n)
+    # with n up to about 11,000 for the example hardware. eps has no effect. It
+    # stays so that callers do not break.
 
     alpha = dt / (tau + dt)
-
-    # Calculate number of elements in filter to reach desired accuracy (eps)
-    n = min(round(np.log(eps) / np.log(1 - alpha)), dgdt.shape[0])
-    filt = (1 - alpha) ** np.arange(n)
-
-    # Implements lowpass filter using convolution to get rid of for loop in original code
-    return alpha * np.convolve(dgdt, filt)[: dgdt.shape[0]]
+    return lfilter([alpha], [1.0, alpha - 1.0], dgdt)
 
 
 def safe_gwf_to_pns(gwf, rf, dt, hw, do_padding=True):
