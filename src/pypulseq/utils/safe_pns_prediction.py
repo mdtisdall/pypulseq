@@ -338,6 +338,78 @@ def safe_gwf_to_pns(gwf, rf, dt, hw, do_padding=True):
     return pns, res
 
 
+def _safe_gwf_to_pns_chunk(gwf, dt, hw, state=None):
+    # function [pns, state] = _safe_gwf_to_pns_chunk(gwf, dt, hw, state)
+    #
+    # gwf   (nx3) in T/m. Samples are on the raster dt. No padding is added.
+    # dt    (1x1) in s
+    # hw    (struct) as for safe_gwf_to_pns.
+    # state SimpleNamespace carried from the previous call, or None for the
+    #       first chunk. Fields:
+    #         g_last (3,)   last gradient sample of each axis (x, y, z).
+    #         zi     (3,3)  lfilter state, indexed [axis, filter], filter
+    #                       order tau1, tau2, tau3.
+    #       For the first chunk, both fields are taken as zero.
+    #
+    # Returns (pns, state):
+    #   pns   (nx3) in percent, as safe_gwf_to_pns gives it.
+    #   state SimpleNamespace with the same two fields, to pass into the
+    #         next call.
+    #
+    # This lets a long waveform be processed in consecutive chunks of any
+    # sizes, with bounded memory, by calling this function once per chunk in
+    # order (state None on the first call, then the state returned by the
+    # previous call). Concatenating the returned pns chunks reproduces, bit
+    # for bit, the rows of safe_gwf_to_pns's result that calc_pns keeps
+    # (res.rf[1:] finite excluded): the zero g_last and zi of the first
+    # chunk match the zero padding safe_gwf_to_pns prepends, so the first
+    # produced row is the same difference from a zero sample; no padding is
+    # appended here, matching the padding safe_gwf_to_pns removes at the end.
+
+    if state is None:
+        safe_hw_check(hw)
+        g_last = np.zeros(3)
+        zi = np.zeros((3, 3))
+    else:
+        g_last = state.g_last
+        zi = state.zi
+
+    dgdt = np.diff(np.vstack([g_last, gwf]), axis=0) / dt
+
+    dt_ms = dt * 1000
+    axes = ['x', 'y', 'z']
+    pns = np.zeros((gwf.shape[0], 3))
+    zi_new = np.zeros((3, 3))
+
+    for ax_idx, axn in enumerate(axes):
+        hw_ax = getattr(hw, axn)
+        dgdt_ax = dgdt[:, ax_idx]
+
+        alpha1 = dt_ms / (hw_ax.tau1 + dt_ms)
+        lp1, zi1 = lfilter([alpha1], [1.0, alpha1 - 1.0], dgdt_ax, zi=zi[ax_idx, 0:1])
+        stim1 = hw_ax.a1 * abs(lp1)
+
+        alpha2 = dt_ms / (hw_ax.tau2 + dt_ms)
+        lp2, zi2 = lfilter([alpha2], [1.0, alpha2 - 1.0], abs(dgdt_ax), zi=zi[ax_idx, 1:2])
+        stim2 = hw_ax.a2 * lp2
+
+        alpha3 = dt_ms / (hw_ax.tau3 + dt_ms)
+        lp3, zi3 = lfilter([alpha3], [1.0, alpha3 - 1.0], dgdt_ax, zi=zi[ax_idx, 2:3])
+        stim3 = hw_ax.a3 * abs(lp3)
+
+        pns[:, ax_idx] = (stim1 + stim2 + stim3) / hw_ax.stim_limit * hw_ax.g_scale * 100
+
+        zi_new[ax_idx, 0] = zi1[0]
+        zi_new[ax_idx, 1] = zi2[0]
+        zi_new[ax_idx, 2] = zi3[0]
+
+    new_state = SimpleNamespace()
+    new_state.g_last = gwf[-1, :].copy()
+    new_state.zi = zi_new
+
+    return pns, new_state
+
+
 def safe_plot(pns, dt=None, envelope=True, envelope_points=500):
     # function h = safe_plot(pns, dt)
     # pns is relative PNS waveform (nx3)

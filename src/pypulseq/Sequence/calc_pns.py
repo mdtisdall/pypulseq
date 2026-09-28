@@ -5,9 +5,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from pypulseq import Sequence
-from pypulseq.utils.safe_pns_prediction import safe_gwf_to_pns, safe_plot
+from pypulseq.utils.safe_pns_prediction import _safe_gwf_to_pns_chunk, safe_plot
 from pypulseq.utils.siemens.asc_to_hw import asc_to_hw
 from pypulseq.utils.siemens.readasc import readasc
+
+# Number of gradient raster samples processed per SAFE-model chunk (0.3 s on the 10 us raster).
+_PNS_CHUNK_SAMPLES = 30_000
 
 
 def calc_pns(
@@ -57,12 +60,6 @@ def calc_pns(
         nt = int(np.ceil(tmax / dt))
         t = max(time_range[0], 0) + (np.arange(nt) + 0.5) * dt
 
-    # Sample gradients
-    gw = np.zeros((t.shape[0], ng))
-    for i in range(ng):
-        if gw_pp[i] is not None:
-            gw[:, i] = gw_pp[i](t)
-
     if do_plots:
         plt.figure()
         for i in range(ng):
@@ -75,17 +72,31 @@ def calc_pns(
         asc, _ = readasc(hardware)
         hardware = asc_to_hw(asc)
 
-    # use the Szczepankiewicz' and Witzel's implementation
-    [pns_comp, res] = safe_gwf_to_pns(
-        gw / obj.system.gamma, np.nan * np.ones(t.shape[0]), obj.grad_raster_time, hardware
-    )  # the RF vector is unused in the code inside but it is zeropaded and exported ...
+    # Sample the gradients and run the SAFE model in chunks of samples, carrying the model state
+    # (last gradient sample and filter state) from one chunk to the next. This bounds peak memory
+    # to the returned arrays plus one chunk, instead of requiring the whole sequence at once.
+    n = t.shape[0]
+    pns_comp = np.empty((n, 3))
+    pns_norm = np.empty(n)
+    state = None
+    for start in range(0, n, _PNS_CHUNK_SAMPLES):
+        stop = min(start + _PNS_CHUNK_SAMPLES, n)
+        t_chunk = t[start:stop]
 
-    # use the exported RF vector to detect and undo zero-padding
-    pns_comp = 0.01 * pns_comp[~np.isfinite(res.rf[1:]), :]
+        # Sample gradients
+        gw = np.zeros((t_chunk.shape[0], ng))
+        for i in range(ng):
+            if gw_pp[i] is not None:
+                gw[:, i] = gw_pp[i](t_chunk)
 
-    # calc pns_norm and the final ok/not_ok
-    pns_norm = np.sqrt((pns_comp**2).sum(axis=1))
-    ok = all(pns_norm < 1)
+        # use the Szczepankiewicz' and Witzel's implementation
+        pns_chunk, state = _safe_gwf_to_pns_chunk(gw / obj.system.gamma, obj.grad_raster_time, hardware, state)
+
+        pns_comp[start:stop] = 0.01 * pns_chunk
+        pns_norm[start:stop] = np.sqrt((pns_comp[start:stop] ** 2).sum(axis=1))
+
+    # calc the final ok/not_ok
+    ok = bool(np.all(pns_norm < 1))
 
     # ready
     if do_plots:
