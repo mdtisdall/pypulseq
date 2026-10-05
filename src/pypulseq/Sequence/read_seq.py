@@ -92,7 +92,9 @@ def read(self, path: str, detect_rf_use: Union[bool, None] = None, remove_duplic
                 warnings.warn(f'No BlockDurationRaster found in file. Using default of {self.block_duration_raster}.')
 
         elif section == '[SIGNATURE]':
-            temp_sign_defs = __read_definitions(input_file)
+            # The values are text: a hex digest can look like a number (for example
+            # '9731349875117297474679317e925476'), and a float loses it.
+            temp_sign_defs = __read_definitions(input_file, numeric=False)
             if 'Type' in temp_sign_defs:
                 self.signature_type = temp_sign_defs['Type']
             if 'Hash' in temp_sign_defs:
@@ -444,7 +446,7 @@ def read(self, path: str, detect_rf_use: Union[bool, None] = None, remove_duplic
         self.remove_duplicates(in_place=True)
 
 
-def __read_definitions(input_file) -> Dict[str, str]:
+def __read_definitions(input_file, numeric: bool = True) -> Dict[str, str]:
     """
     Read the [DEFINITIONS] section of a sequence fil and return a map of key/value entries.
 
@@ -452,6 +454,9 @@ def __read_definitions(input_file) -> Dict[str, str]:
     ----------
     input_file : file object
         Sequence file.
+    numeric : bool, default=True
+        Convert the values that are numbers to floats. If False, each value is the text
+        after the key.
 
     Returns
     -------
@@ -462,6 +467,10 @@ def __read_definitions(input_file) -> Dict[str, str]:
     line = __skip_comments(input_file)
     while line != -1 and not (line == '' or line[0] == '#'):
         tok = line.split(' ')
+        if not numeric:
+            definitions[tok[0]] = line[len(tok[0]) + 1 :].strip()
+            line = __strip_line(input_file)
+            continue
         try:  # Try converting every element into a float
             [float(x) for x in tok[1:]]
             value = np.array(tok[1:], dtype=float)
