@@ -577,3 +577,51 @@ class TestSequence:
 
         for label in labels_seq:
             assert (labels_seq[label] == labels_seq2[label]).all(), f'Label {label} does not match'
+
+
+# MD5 hex digests that float() accepts, and one that it does not. The reader must keep
+# each one as text.
+@pytest.mark.parametrize(
+    'digest',
+    [
+        '9731349875117297474679317e925476',  # float() gives inf
+        '12345678901234567890123456789e12',  # float() gives a rounded finite number
+        '12345678901234567890123456789012',  # 32 decimal digits
+        '00000000000000000000000000000042',  # float() gives 42.0
+        'd41d8cd98f00b204e9800998ecf8427e',  # not a number
+    ],
+)
+def test_read_signature_as_text(digest, tmp_path):
+    seq = pp.Sequence()
+    seq.add_block(pp.make_delay(1e-3))
+
+    # Write the file without a signature, then add a [SIGNATURE] section in the format of
+    # write(). read() does not check the hash, so it does not have to match the file.
+    output_filename = tmp_path / 'signature.seq'
+    seq.write(output_filename, create_signature=False)
+    with open(output_filename, 'a') as f:
+        f.write('\n[SIGNATURE]\n')
+        f.write('# This is the hash of the Pulseq file\n')
+        f.write('Type md5\n')
+        f.write(f'Hash {digest}\n')
+
+    seq2 = pp.Sequence()
+    seq2.read(output_filename)
+
+    assert type(seq2.signature_value) is str
+    assert seq2.signature_value == digest
+    assert seq2.signature_type == 'md5'
+
+
+def test_writeread_signature(tmp_path):
+    seq = pp.Sequence()
+    seq.add_block(pp.make_delay(1e-3))
+
+    output_filename = tmp_path / 'signature.seq'
+    signature = seq.write(output_filename)
+
+    seq2 = pp.Sequence()
+    seq2.read(output_filename)
+
+    assert seq2.signature_value == signature
+    assert seq2.signature_type == 'md5'
